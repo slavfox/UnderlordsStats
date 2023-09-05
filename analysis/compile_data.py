@@ -1,8 +1,16 @@
 import json
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, astuple as _astuple
 from pathlib import Path
 from statistics import mean, stdev
+from openpyxl import Workbook
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.utils.cell import get_column_letter
+from copy import copy
+
+def astuple(self):
+    return _astuple(self)
 
 games_dir = Path(__file__).parent.parent / "processed"
 total_games = len(list(games_dir.glob("*.json")))
@@ -81,6 +89,66 @@ hero_tiers = {
     "Wraith King": 5,
 }
 
+item_tiers = {
+    "Crown of Antlers": 3,
+    "Armlet of Mordiggian": 2,
+    "Skull Basher": 3,
+    "Battle Fury": 3,
+    "Black King Bar": 4,
+    "Blade Mail": 2,
+    "Bloodthorn": 5,
+    "Arcane Boots": 2,
+    "Butterfly": 4,
+    "Chainmail": 1,
+    "Claymore": 1,
+    "Craggy Coat": 3,
+    "Blink Dagger": 2,
+    "Dagon": 4,
+    "Desolator": 2,
+    "Diffusal Blade": 4,
+    "Eul's Scepter": 3,
+    "Leg Breaker's Fedora": 3,
+    "Gloves of Haste": 1,
+    "Heaven's Halberd": 2,
+    "Headdress": 1,
+    "Hood of Defiance": 1,
+    "Horn of the Alpha": 5,
+    "Kaden's Blade": 4,
+    "Kaya": 1,
+    "Dragon Lance": 2,
+    "Maelstrom": 4,
+    "Mekansm": 4,
+    "Monkey King Bar": 4,
+    "Mask of Madness": 3,
+    "Moon Shard": 4,
+    "Morbid Mask": 1,
+    "Necronomicon": 3,
+    "Octarine Essence": 3,
+    "Refresher Orb": 4,
+    "Paladin Sword": 2,
+    "Stonehall Pike": 2,
+    "Pipe of Insight": 3,
+    "Pirate Hat": 3,
+    "Quelling Blade": 2,
+    "Radiance": 5,
+    "Divine Rapier": 5,
+    "Ristul Circlet": 3,
+    "Satanic": 5,
+    "Scythe of Vyse": 4,
+    "Witless Shako": 3,
+    "Shiva's Guard": 5,
+    "Silver Edge": 3,
+    "Eye of Skadi": 4,
+    "Stonehall Cloak": 2,
+    "Talisman of Evasion": 1,
+    "Heart of Tarrasque": 5,
+    "Vanguard": 2,
+    "Vitality Booster": 1,
+    "Vesture of the Tyrant": 5,
+    "Vladmir's Offering": 5,
+    "Void Stone": 1,
+}
+
 tier_heroes_seen_by_stars = {
     1: {1: 0, 2: 0, 3: 0, "total": 0},
     2: {1: 0, 2: 0, 3: 0, "total": 0},
@@ -94,18 +162,26 @@ underlord_finishes = defaultdict(list)
 item_finishes = defaultdict(list)
 alliance_finishes = defaultdict(list)
 active_alliance_finishes = defaultdict(list)
+alliance_pair_finishes = defaultdict(lambda: defaultdict(list))
+
+
+def active_alliances(alliances):
+    yield from (
+        (name, alliance) for name, alliance in alliances.items() if alliance["active"]
+    )
+
 
 for row in data:
     if not row["underlord"]:
         continue
     underlord_finishes[row["underlord"]].append(row["rank"])
     underlord_finishes[row["underlord"].split(" ")[0]].append(row["rank"])
-    for alliance, a in row["alliances"].items():
-        if a["active"]:
-            alliance_finishes[alliance].append(row["rank"])
-            active_alliance_finishes[(alliance, a["active"])].append(
-                row["rank"]
-            )
+    for name, alliance_data in active_alliances(row["alliances"]):
+        alliance_finishes[name].append(row["rank"])
+        active_alliance_finishes[(name, alliance_data["active"])].append(row["rank"])
+        for name2, data2 in active_alliances(row["alliances"]):
+            # Intentionally don't skip if name == name2
+            alliance_pair_finishes[name][name2].append(row["rank"])
     for hero in row["heroes"]:
         tier_heroes_seen_by_stars[hero_tiers[hero["name"]]][hero["stars"]] += 1
         tier_heroes_seen_by_stars[hero_tiers[hero["name"]]]["total"] += 1
@@ -115,25 +191,25 @@ for row in data:
 
 finish_rates_by_tier = {
     n: {
-        1: tier_heroes_seen_by_stars[n][1]
-        / tier_heroes_seen_by_stars[n]["total"],
-        2: tier_heroes_seen_by_stars[n][2]
-        / tier_heroes_seen_by_stars[n]["total"],
-        3: tier_heroes_seen_by_stars[n][3]
-        / tier_heroes_seen_by_stars[n]["total"],
+        1: tier_heroes_seen_by_stars[n][1] / tier_heroes_seen_by_stars[n]["total"],
+        2: tier_heroes_seen_by_stars[n][2] / tier_heroes_seen_by_stars[n]["total"],
+        3: tier_heroes_seen_by_stars[n][3] / tier_heroes_seen_by_stars[n]["total"],
         "total": tier_heroes_seen_by_stars[n]["total"] / len(data),
     }
     for n in range(1, 6)
 }
 
 
-@dataclass(slots=True)
+@dataclass
 class HeroRow:
     name: str
     total_pickrate: float
     pickrate_1: float
+    p_1: float
     pickrate_2: float
+    p_2: float
     pickrate_3: float
+    p_3: float
 
     avg_finish_1: float
     finish_std_dev_1: float
@@ -144,24 +220,110 @@ class HeroRow:
     avg_finish_total: float
     finish_std_dev_total: float
 
+    @property
+    def tier(self):
+        return hero_tiers[self.name]
 
-@dataclass(slots=True)
+    @property
+    def weighted_avg_finish(self):
+        return (
+                (self.avg_finish_1 or 0) * (finish_rates_by_tier[self.tier][
+            1] or 0)
+            + (self.avg_finish_2 or 0) * (finish_rates_by_tier[self.tier][2]
+                                        or 0)
+            + (self.avg_finish_3 or 0) * (finish_rates_by_tier[self.tier][3]
+                                        or 0)
+        )
+
+    @staticmethod
+    def header():
+        return [
+            "Hero",
+            "Tier",
+            "Pick Rate (f)",
+            "f[⭐]",
+            "P(⭐)",
+            "f[⭐⭐]",
+            "P(⭐⭐)",
+            "f[⭐⭐⭐]",
+            "P(⭐⭐⭐)",
+            "⭐ Mean Rank",
+            "Std Dev",
+            "⭐⭐ Mean Rank",
+            "Std Dev",
+            "⭐⭐⭐ Mean Rank",
+            "Std Dev",
+            "Mean Rank",
+            "Std Dev",
+            "Tier-normalized Mean Rank",
+        ]
+
+    def to_row(self):
+        return [
+            self.name,
+            self.tier,
+            self.total_pickrate,
+            self.pickrate_1,
+            self.p_1,
+            self.pickrate_2,
+            self.p_2,
+            self.pickrate_3,
+            self.p_3,
+            self.avg_finish_1,
+            self.finish_std_dev_1,
+            self.avg_finish_2,
+            self.finish_std_dev_2,
+            self.avg_finish_3,
+            self.finish_std_dev_3,
+            self.avg_finish_total,
+            self.finish_std_dev_total,
+            self.weighted_avg_finish,
+        ]
+
+
+@dataclass
 class UnderlordRow:
     name: str
     pickrate: float
     avg_finish: float
     finish_std_dev: float
 
+    to_row = astuple
 
-@dataclass(slots=True)
+    @property
+    def is_total(self):
+        return self.name.split(" ")[0] == self.name
+
+    @staticmethod
+    def header():
+        return [
+            "Underlord",
+            "Pick Rate",
+            "Mean Rank",
+            "Std Dev",
+        ]
+
+
+@dataclass
 class AllianceRow:
     name: str
     pickrate: float
     avg_finish: float
     finish_std_dev: float
 
+    to_row = astuple
 
-@dataclass(slots=True)
+    @staticmethod
+    def header():
+        return [
+            "Alliance",
+            "Pick Rate",
+            "Mean Rank",
+            "Std Dev",
+        ]
+
+
+@dataclass
 class ActiveAllianceRow:
     name: str
     level: int
@@ -169,16 +331,71 @@ class ActiveAllianceRow:
     avg_finish: float
     finish_std_dev: float
 
+    to_row = astuple
 
-@dataclass(slots=True)
+    @staticmethod
+    def header():
+        return [
+            "Alliance",
+            "Level",
+            "Pick Rate",
+            "Mean Rank",
+            "Std Dev",
+        ]
+
+
+@dataclass
 class ItemRow:
     name: str
     pickrate: float
     avg_finish: float
     finish_std_dev: float
 
+    @property
+    def tier(self):
+        return item_tiers[self.name]
 
-@dataclass(slots=True)
+    @staticmethod
+    def header():
+        return [
+            "Item",
+            "Tier",
+            "Pick Rate",
+            "Mean Rank",
+            "Std Dev",
+        ]
+
+    def to_row(self):
+        return [
+            self.name,
+            self.tier,
+            self.pickrate,
+            self.avg_finish,
+            self.finish_std_dev,
+        ]
+
+
+higher_is_better_rule = ColorScaleRule(
+    start_type="min",
+    start_color="FFAAAA",
+    mid_type="percentile",
+    mid_value=50,
+    mid_color="FFFFFF",
+    end_type="max",
+    end_color="AAAAFF",
+)
+lower_is_better_rule = ColorScaleRule(
+    start_type="min",
+    start_color="AAAAFF",
+    mid_type="percentile",
+    mid_value=50,
+    mid_color="FFFFFF",
+    end_type="max",
+    end_color="FFAAAA",
+)
+
+
+@dataclass
 class UnderlordsMeta:
     games_analyzed: int
     rows_analyzed: int
@@ -187,7 +404,140 @@ class UnderlordsMeta:
     underlord_stats: list[UnderlordRow]
     alliance_stats: list[AllianceRow]
     active_alliance_stats: list[ActiveAllianceRow]
+    alliance_pair_scores: dict[str, dict[str, float]]
     item_stats: list[ItemRow]
+
+    def to_workbook(self):
+        workbook = Workbook()
+        ws: Worksheet = workbook.active
+
+        # Meta
+        ws.title = "Meta"
+        ws.append(["Games Analyzed", self.games_analyzed])
+        ws.append(["Rows Analyzed", self.rows_analyzed])
+
+        # Hero scores
+        ws = workbook.create_sheet("Hero Scores")
+        ws.append(HeroRow.header())
+        for row in sorted(self.hero_stats, key=lambda h: (h.tier,
+                                                          h.weighted_avg_finish)):
+            ws.append(row.to_row())
+        for col in ["C", "D", "E", "F", "G", "H", "I"]:
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                higher_is_better_rule,
+            )
+        for col in ["L", "J", "K", "M", "N", "O", "P", "Q", "R", "S"]:
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                lower_is_better_rule,
+            )
+        for row in ws.iter_rows(min_row=2, min_col=3):
+            for cell in row:
+                cell.number_format = "0.00"
+        ws.freeze_panes = "C2"
+
+        # Underlord scores
+        ws = workbook.create_sheet("Underlord Scores")
+        ws.append(UnderlordRow.header())
+        for row in sorted(self.underlord_stats, key=lambda u: u.avg_finish):
+            ws.append(row.to_row())
+            if row.is_total:
+                bold_font = copy(ws["A"][-1].font)
+                bold_font.bold = True
+                ws["A"][-1].font = bold_font
+        for col in "B":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                higher_is_better_rule,
+            )
+        for col in "CD":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                lower_is_better_rule,
+            )
+        for row in ws.iter_rows(min_row=2, min_col=2):
+            for cell in row:
+                cell.number_format = "0.00"
+        ws.freeze_panes = "B2"
+
+        # Alliance scores
+        ws = workbook.create_sheet("Alliance Scores")
+        ws.append(AllianceRow.header())
+        for row in sorted(self.alliance_stats, key=lambda a: a.avg_finish):
+            ws.append(row.to_row())
+        for col in "B":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                higher_is_better_rule,
+            )
+        for col in "CD":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                lower_is_better_rule,
+            )
+        for row in ws.iter_rows(min_row=2, min_col=2):
+            for cell in row:
+                cell.number_format = "0.00"
+        ws.freeze_panes = "B2"
+
+        # Active Alliance scores
+        ws = workbook.create_sheet("Active Alliance Scores")
+        ws.append(ActiveAllianceRow.header())
+        for row in sorted(self.active_alliance_stats, key=lambda a: a.avg_finish):
+            ws.append(row.to_row())
+        for col in "C":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                higher_is_better_rule,
+            )
+        for col in "DE":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                lower_is_better_rule,
+            )
+        for row in ws.iter_rows(min_row=2, min_col=3):
+            for cell in row:
+                cell.number_format = "0.00"
+        # TODO normalize by tier
+        ws.freeze_panes = "C2"
+
+        # Item scores
+        ws = workbook.create_sheet("Item Scores")
+        ws.append(ItemRow.header())
+        for row in sorted(self.item_stats, key=lambda i: (i.tier, i.avg_finish)):
+            ws.append(row.to_row())
+        for col in "C":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                higher_is_better_rule,
+            )
+        for col in "DE":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                lower_is_better_rule,
+            )
+        for row in ws.iter_rows(min_row=2, min_col=3):
+            for cell in row:
+                cell.number_format = "0.00"
+        ws.freeze_panes = "C2"
+
+        # Alliance Pair scores
+        ws = workbook.create_sheet("Alliance Pair Scores")
+        ws.append([""] + sorted(self.alliance_pair_scores))
+        for name in sorted(self.alliance_pair_scores):
+            ws.append([name] +
+            [v for _, v in sorted(self.alliance_pair_scores[name].items())])
+        ws.conditional_formatting.add(
+            f"B2:{get_column_letter(ws.max_column)}{ws.max_row}",
+            lower_is_better_rule,
+        )
+        for row in ws.iter_rows(min_row=2, min_col=2):
+            for cell in row:
+                cell.number_format = "0.00"
+        ws.freeze_panes = "B2"
+
+        return workbook
 
 
 def build_stats():
@@ -202,8 +552,26 @@ def build_stats():
             )
             / len(data),
             pickrate_1=len(hero_finishes[hero][1]) / len(data),
+            p_1=len(hero_finishes[hero][1])
+            / (
+                len(hero_finishes[hero][1])
+                + len(hero_finishes[hero][2])
+                + len(hero_finishes[hero][3])
+            ),
             pickrate_2=len(hero_finishes[hero][2]) / len(data),
+            p_2=len(hero_finishes[hero][2])
+            / (
+                len(hero_finishes[hero][1])
+                + len(hero_finishes[hero][2])
+                + len(hero_finishes[hero][3])
+            ),
             pickrate_3=len(hero_finishes[hero][3]) / len(data),
+            p_3=len(hero_finishes[hero][3])
+            / (
+                len(hero_finishes[hero][1])
+                + len(hero_finishes[hero][2])
+                + len(hero_finishes[hero][3])
+            ),
             avg_finish_1=mean(hero_finishes[hero][1])
             if hero_finishes[hero][1]
             else None,
@@ -223,14 +591,10 @@ def build_stats():
             if len(hero_finishes[hero][3]) > 1
             else None,
             avg_finish_total=mean(
-                hero_finishes[hero][1]
-                + hero_finishes[hero][2]
-                + hero_finishes[hero][3]
+                hero_finishes[hero][1] + hero_finishes[hero][2] + hero_finishes[hero][3]
             ),
             finish_std_dev_total=stdev(
-                hero_finishes[hero][1]
-                + hero_finishes[hero][2]
-                + hero_finishes[hero][3]
+                hero_finishes[hero][1] + hero_finishes[hero][2] + hero_finishes[hero][3]
             ),
         )
         for hero in hero_finishes
@@ -280,6 +644,13 @@ def build_stats():
         )
         for item in item_finishes
     ]
+    alliance_pair_scores = {
+        name: {
+            name2: mean(alliance_pair_finishes[name][name2])
+            for name2 in alliance_pair_finishes[name]
+        }
+        for name in alliance_pair_finishes
+    }
     return UnderlordsMeta(
         games_analyzed=total_games,
         rows_analyzed=len(data),
@@ -289,7 +660,10 @@ def build_stats():
         alliance_stats=alliance_stats,
         active_alliance_stats=active_alliance_stats,
         item_stats=item_stats,
+        alliance_pair_scores=alliance_pair_scores,
     )
 
 
-print(json.dumps(asdict(build_stats()), indent=2))
+stats = build_stats()
+workbook = stats.to_workbook()
+workbook.save("stats.xlsx")

@@ -323,7 +323,7 @@ underlord_full_names = {
     "jull": "Jull",
     "jull-healer": "Jull (Healing)",
     "jull-damage": "Jull (Damage)",
-    None: ""
+    None: "",
 }
 
 item_alliances = {
@@ -334,7 +334,7 @@ item_alliances = {
 }
 
 
-@dataclass(slots=True)
+@dataclass
 class Hero:
     name: str
     stars: int
@@ -348,7 +348,7 @@ class Hero:
         }
 
 
-@dataclass(slots=True)
+@dataclass
 class AllianceCounter:
     name: Alliance
     total: int = 0
@@ -361,7 +361,7 @@ class AllianceCounter:
         return 0
 
 
-@dataclass(slots=True)
+@dataclass
 class ScoreboardRow:
     rank: int
     underlord: Optional[str] = None
@@ -383,7 +383,7 @@ class ScoreboardRow:
         }
 
 
-@dataclass(slots=True)
+@dataclass
 class Scoreboard:
     fox_rank: int = 1
     rows: list[ScoreboardRow] = field(default_factory=list)
@@ -487,9 +487,7 @@ def process_scoreboard(scoreboard: Image.Image):
                 )
             )
             try:
-                star_value = int(
-                    get_match(star_value, stars, unknown_stars_dir)
-                )
+                star_value = int(get_match(star_value, stars, unknown_stars_dir))
             except TypeError:
                 print(f"Error processing {currently_processing}")
                 print(

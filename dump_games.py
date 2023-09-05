@@ -36,11 +36,9 @@ for game in reversed(list(games)):
             pass
 
     try:
-        fox = pyautogui.locateOnScreen("fox_dark.png", grayscale=True,
-                                       confidence=0.9)
+        fox = pyautogui.locateOnScreen("fox_dark.png", grayscale=True, confidence=0.9)
     except pyautogui.ImageNotFoundException:
-        fox = pyautogui.locateOnScreen("fox_bright.png", grayscale=True,
-                                       confidence=0.9)
+        fox = pyautogui.locateOnScreen("fox_bright.png", grayscale=True, confidence=0.9)
 
     fox_area = (fox[0] - 120, fox[1], 40, 40)
     index += 1

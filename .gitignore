@@ -3,3 +3,5 @@ processed/
 screenshots/
 latest_dumped.txt
 .idea
+*.xlsx
+*.xlsx#
