@@ -4,21 +4,15 @@ from pathlib import Path
 pyautogui.FAILSAFE = False
 
 screenshots = Path("screenshots")
-# find last screenshot by index
-if any(screenshots.glob("*.png")):
-    index = sorted(int(s.stem.split("_")[0]) for s in screenshots.glob("*.png"))[-1]
-else:
-    index = 0
 
-games = pyautogui.locateAllOnScreen("KnockoutButton.png", grayscale=True)
-for game in reversed(list(games)):
-    center = pyautogui.center(game)
-    pyautogui.click(center)
 
+def dump_game():
     button = None
     while not button:
         try:
-            button = pyautogui.locateOnScreen("CloseButton.png", grayscale=True)
+            button = pyautogui.locateOnScreen(
+                "CloseButton.png", grayscale=True
+            )
         except pyautogui.ImageNotFoundException:
             pass
 
@@ -31,18 +25,34 @@ for game in reversed(list(games)):
     contraptions = None
     while not contraptions:
         try:
-            contraptions = pyautogui.locateOnScreen("Contraptions.png", grayscale=True)
+            contraptions = pyautogui.locateOnScreen(
+                "Contraptions.png", grayscale=True
+            )
         except pyautogui.ImageNotFoundException:
             pass
 
     try:
-        fox = pyautogui.locateOnScreen("fox_dark.png", grayscale=True, confidence=0.9)
+        fox = pyautogui.locateOnScreen(
+            "fox_dark.png", grayscale=True, confidence=0.9
+        )
     except pyautogui.ImageNotFoundException:
-        fox = pyautogui.locateOnScreen("fox_bright.png", grayscale=True, confidence=0.9)
+        fox = pyautogui.locateOnScreen(
+            "fox_bright.png", grayscale=True, confidence=0.9
+        )
 
     fox_area = (fox[0] - 120, fox[1], 40, 40)
-    index += 1
-    pyautogui.screenshot(str(screenshots / f"{index}_fox_rank.png"), region=fox_area)
+    if any(screenshots.glob("*.png")):
+        index = (
+            sorted(
+                int(s.stem.split("_")[0]) for s in screenshots.glob("*.png")
+            )[-1]
+            + 1
+        )
+    else:
+        index = 0
+    pyautogui.screenshot(
+        str(screenshots / f"{index}_fox_rank.png"), region=fox_area
+    )
 
     screenshot_area = (
         button[0],
@@ -60,6 +70,15 @@ for game in reversed(list(games)):
     pyautogui.click()
     while not pyautogui.locateOnScreen("recentMatches.png", grayscale=True):
         pass
-    print("Starting next dump")
 
-print("Saved visible games")
+
+def dump_visible_games():
+    games = pyautogui.locateAllOnScreen("KnockoutButton.png", grayscale=True)
+    for game in reversed(list(games)):
+        center = pyautogui.center(game)
+        pyautogui.click(center)
+        dump_game()
+        print("Starting next dump")
+
+
+dump_game()

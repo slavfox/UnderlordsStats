@@ -7,10 +7,13 @@ from openpyxl import Workbook
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.utils.cell import get_column_letter
+import numpy as np
 from copy import copy
+
 
 def astuple(self):
     return _astuple(self)
+
 
 games_dir = Path(__file__).parent.parent / "processed"
 total_games = len(list(games_dir.glob("*.json")))
@@ -163,11 +166,20 @@ item_finishes = defaultdict(list)
 alliance_finishes = defaultdict(list)
 active_alliance_finishes = defaultdict(list)
 alliance_pair_finishes = defaultdict(lambda: defaultdict(list))
+hero_finishes_by_rank = defaultdict(lambda: defaultdict(int))
+hero_star_finishes_by_rank = defaultdict(lambda: defaultdict(list))
+underlord_finishes_by_rank = defaultdict(lambda: defaultdict(int))
+alliance_finishes_by_rank = defaultdict(lambda: defaultdict(int))
+active_alliance_finishes_by_rank = defaultdict(lambda: defaultdict(int))
+item_finishes_by_rank = defaultdict(lambda: defaultdict(int))
+finishes_by_rank = defaultdict(int)
 
 
 def active_alliances(alliances):
     yield from (
-        (name, alliance) for name, alliance in alliances.items() if alliance["active"]
+        (name, alliance)
+        for name, alliance in alliances.items()
+        if alliance["active"]
     )
 
 
@@ -176,9 +188,20 @@ for row in data:
         continue
     underlord_finishes[row["underlord"]].append(row["rank"])
     underlord_finishes[row["underlord"].split(" ")[0]].append(row["rank"])
+    underlord_finishes_by_rank[row["rank"]][row["underlord"]] += 1
+    underlord_finishes_by_rank[row["rank"]][
+        row["underlord"].split(" ")[0]
+    ] += 1
+    finishes_by_rank[row["rank"]] += 1
     for name, alliance_data in active_alliances(row["alliances"]):
         alliance_finishes[name].append(row["rank"])
-        active_alliance_finishes[(name, alliance_data["active"])].append(row["rank"])
+        active_alliance_finishes[(name, alliance_data["active"])].append(
+            row["rank"]
+        )
+        alliance_finishes_by_rank[row["rank"]][name] += 1
+        active_alliance_finishes_by_rank[row["rank"]][
+            (name, alliance_data["active"])
+        ] += 1
         for name2, data2 in active_alliances(row["alliances"]):
             # Intentionally don't skip if name == name2
             alliance_pair_finishes[name][name2].append(row["rank"])
@@ -186,17 +209,32 @@ for row in data:
         tier_heroes_seen_by_stars[hero_tiers[hero["name"]]][hero["stars"]] += 1
         tier_heroes_seen_by_stars[hero_tiers[hero["name"]]]["total"] += 1
         hero_finishes[hero["name"]][hero["stars"]].append(row["rank"])
+        hero_finishes_by_rank[row["rank"]][hero["name"]] += 1
+        hero_star_finishes_by_rank[row["rank"]][hero["name"]].append(
+            hero["stars"]
+        )
         if hero["item"]:
             item_finishes[hero["item"]].append(row["rank"])
+            item_finishes_by_rank[row["rank"]][hero["item"]] += 1
 
 finish_rates_by_tier = {
     n: {
-        1: tier_heroes_seen_by_stars[n][1] / tier_heroes_seen_by_stars[n]["total"],
-        2: tier_heroes_seen_by_stars[n][2] / tier_heroes_seen_by_stars[n]["total"],
-        3: tier_heroes_seen_by_stars[n][3] / tier_heroes_seen_by_stars[n]["total"],
+        1: tier_heroes_seen_by_stars[n][1]
+        / tier_heroes_seen_by_stars[n]["total"],
+        2: tier_heroes_seen_by_stars[n][2]
+        / tier_heroes_seen_by_stars[n]["total"],
+        3: tier_heroes_seen_by_stars[n][3]
+        / tier_heroes_seen_by_stars[n]["total"],
         "total": tier_heroes_seen_by_stars[n]["total"] / len(data),
     }
     for n in range(1, 6)
+}
+hero_finish_f_by_rank = {
+    rank: {
+        hero: hero_fs / finishes_by_rank[rank]
+        for hero, hero_fs in finishes.items()
+    }
+    for rank, finishes in hero_finishes_by_rank.items()
 }
 
 
@@ -220,6 +258,9 @@ class HeroRow:
     avg_finish_total: float
     finish_std_dev_total: float
 
+    rank_slope: float
+    tier_normalized_rank_slope: float
+
     @property
     def tier(self):
         return hero_tiers[self.name]
@@ -227,12 +268,12 @@ class HeroRow:
     @property
     def weighted_avg_finish(self):
         return (
-                (self.avg_finish_1 or 0) * (finish_rates_by_tier[self.tier][
-            1] or 0)
-            + (self.avg_finish_2 or 0) * (finish_rates_by_tier[self.tier][2]
-                                        or 0)
-            + (self.avg_finish_3 or 0) * (finish_rates_by_tier[self.tier][3]
-                                        or 0)
+            (self.avg_finish_1 or 0)
+            * (finish_rates_by_tier[self.tier][1] or 0)
+            + (self.avg_finish_2 or 0)
+            * (finish_rates_by_tier[self.tier][2] or 0)
+            + (self.avg_finish_3 or 0)
+            * (finish_rates_by_tier[self.tier][3] or 0)
         )
 
     @staticmethod
@@ -256,6 +297,8 @@ class HeroRow:
             "Mean Rank",
             "Std Dev",
             "Tier-normalized Mean Rank",
+            "Rank Slope",
+            "Tier-normalized Rank Slope"
         ]
 
     def to_row(self):
@@ -278,6 +321,8 @@ class HeroRow:
             self.avg_finish_total,
             self.finish_std_dev_total,
             self.weighted_avg_finish,
+            self.rank_slope,
+            self.tier_normalized_rank_slope,
         ]
 
 
@@ -287,6 +332,7 @@ class UnderlordRow:
     pickrate: float
     avg_finish: float
     finish_std_dev: float
+    rank_slope: float
 
     to_row = astuple
 
@@ -301,6 +347,7 @@ class UnderlordRow:
             "Pick Rate",
             "Mean Rank",
             "Std Dev",
+            "Rank Slope",
         ]
 
 
@@ -310,6 +357,7 @@ class AllianceRow:
     pickrate: float
     avg_finish: float
     finish_std_dev: float
+    rank_slope: float
 
     to_row = astuple
 
@@ -320,6 +368,7 @@ class AllianceRow:
             "Pick Rate",
             "Mean Rank",
             "Std Dev",
+            "Rank Slope",
         ]
 
 
@@ -330,6 +379,7 @@ class ActiveAllianceRow:
     pickrate: float
     avg_finish: float
     finish_std_dev: float
+    rank_slope: float
 
     to_row = astuple
 
@@ -341,6 +391,7 @@ class ActiveAllianceRow:
             "Pick Rate",
             "Mean Rank",
             "Std Dev",
+            "Rank Slope",
         ]
 
 
@@ -350,6 +401,7 @@ class ItemRow:
     pickrate: float
     avg_finish: float
     finish_std_dev: float
+    rank_slope: float
 
     @property
     def tier(self):
@@ -363,6 +415,7 @@ class ItemRow:
             "Pick Rate",
             "Mean Rank",
             "Std Dev",
+            "Rank Slope",
         ]
 
     def to_row(self):
@@ -372,6 +425,7 @@ class ItemRow:
             self.pickrate,
             self.avg_finish,
             self.finish_std_dev,
+            self.rank_slope,
         ]
 
 
@@ -389,6 +443,15 @@ lower_is_better_rule = ColorScaleRule(
     start_color="AAAAFF",
     mid_type="percentile",
     mid_value=50,
+    mid_color="FFFFFF",
+    end_type="max",
+    end_color="FFAAAA",
+)
+slope_rule = ColorScaleRule(
+    start_type="min",
+    start_color="AAAAFF",
+    mid_value=0,
+    mid_type="num",
     mid_color="FFFFFF",
     end_type="max",
     end_color="FFAAAA",
@@ -419,28 +482,42 @@ class UnderlordsMeta:
         # Hero scores
         ws = workbook.create_sheet("Hero Scores")
         ws.append(HeroRow.header())
-        for row in sorted(self.hero_stats, key=lambda h: (h.tier,
-                                                          h.weighted_avg_finish)):
+        for row in sorted(
+            self.hero_stats,
+            key=lambda h: (h.tier, h.tier_normalized_rank_slope),
+        ):
             ws.append(row.to_row())
         for col in ["C", "D", "E", "F", "G", "H", "I"]:
             ws.conditional_formatting.add(
                 f"{col}2:{col}{len(self.hero_stats) + 1}",
                 higher_is_better_rule,
             )
-        for col in ["L", "J", "K", "M", "N", "O", "P", "Q", "R", "S"]:
+
+        for col in ["L", "J", "K", "M", "N", "O", "P", "Q", "R"]:
             ws.conditional_formatting.add(
                 f"{col}2:{col}{len(self.hero_stats) + 1}",
                 lower_is_better_rule,
             )
-        for row in ws.iter_rows(min_row=2, min_col=3):
-            for cell in row:
+        for col in "ST":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                slope_rule,
+            )
+        for col in ws.iter_cols(min_row=2, min_col=10, max_col=18):
+            for cell in col:
                 cell.number_format = "0.00"
+        for col in ws.iter_cols(min_row=2, min_col=3, max_col=9):
+            for cell in col:
+                cell.number_format = "0.00%"
+        for col in ws.iter_cols(min_row=2, min_col=19):
+            for cell in col:
+                cell.number_format = "0.00%"
         ws.freeze_panes = "C2"
 
         # Underlord scores
         ws = workbook.create_sheet("Underlord Scores")
         ws.append(UnderlordRow.header())
-        for row in sorted(self.underlord_stats, key=lambda u: u.avg_finish):
+        for row in sorted(self.underlord_stats, key=lambda u: u.rank_slope):
             ws.append(row.to_row())
             if row.is_total:
                 bold_font = copy(ws["A"][-1].font)
@@ -456,15 +533,23 @@ class UnderlordsMeta:
                 f"{col}2:{col}{len(self.hero_stats) + 1}",
                 lower_is_better_rule,
             )
-        for row in ws.iter_rows(min_row=2, min_col=2):
+        for col in "E":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                slope_rule,
+            )
+        for row in ws.iter_rows(min_row=2, min_col=3):
             for cell in row:
                 cell.number_format = "0.00"
+        for col in "BE":
+            for cell in ws[col][1:]:
+                cell.number_format = "0.00%"
         ws.freeze_panes = "B2"
 
         # Alliance scores
         ws = workbook.create_sheet("Alliance Scores")
         ws.append(AllianceRow.header())
-        for row in sorted(self.alliance_stats, key=lambda a: a.avg_finish):
+        for row in sorted(self.alliance_stats, key=lambda a: a.rank_slope):
             ws.append(row.to_row())
         for col in "B":
             ws.conditional_formatting.add(
@@ -476,15 +561,25 @@ class UnderlordsMeta:
                 f"{col}2:{col}{len(self.hero_stats) + 1}",
                 lower_is_better_rule,
             )
-        for row in ws.iter_rows(min_row=2, min_col=2):
+        for col in "E":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                slope_rule,
+            )
+        for row in ws.iter_rows(min_row=2, min_col=3):
             for cell in row:
                 cell.number_format = "0.00"
+        for col in "BE":
+            for cell in ws[col][1:]:
+                cell.number_format = "0.00%"
         ws.freeze_panes = "B2"
 
         # Active Alliance scores
         ws = workbook.create_sheet("Active Alliance Scores")
         ws.append(ActiveAllianceRow.header())
-        for row in sorted(self.active_alliance_stats, key=lambda a: a.avg_finish):
+        for row in sorted(
+            self.active_alliance_stats, key=lambda a: a.rank_slope
+        ):
             ws.append(row.to_row())
         for col in "C":
             ws.conditional_formatting.add(
@@ -496,16 +591,26 @@ class UnderlordsMeta:
                 f"{col}2:{col}{len(self.hero_stats) + 1}",
                 lower_is_better_rule,
             )
-        for row in ws.iter_rows(min_row=2, min_col=3):
+        for col in "F":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                slope_rule,
+            )
+        for row in ws.iter_rows(min_row=2, min_col=4):
             for cell in row:
                 cell.number_format = "0.00"
+        for col in "CF":
+            for cell in ws[col][1:]:
+                cell.number_format = "0.00%"
         # TODO normalize by tier
         ws.freeze_panes = "C2"
 
         # Item scores
         ws = workbook.create_sheet("Item Scores")
         ws.append(ItemRow.header())
-        for row in sorted(self.item_stats, key=lambda i: (i.tier, i.avg_finish)):
+        for row in sorted(
+            self.item_stats, key=lambda i: (i.tier, i.rank_slope)
+        ):
             ws.append(row.to_row())
         for col in "C":
             ws.conditional_formatting.add(
@@ -517,23 +622,36 @@ class UnderlordsMeta:
                 f"{col}2:{col}{len(self.hero_stats) + 1}",
                 lower_is_better_rule,
             )
-        for row in ws.iter_rows(min_row=2, min_col=3):
-            for cell in row:
+        for col in "F":
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{len(self.hero_stats) + 1}",
+                slope_rule,
+            )
+        for col in ws.iter_cols(min_row=2, min_col=4):
+            for cell in col:
                 cell.number_format = "0.00"
+        for col in "CF":
+            for cell in ws[col][1:]:
+                cell.number_format = "0.00%"
         ws.freeze_panes = "C2"
 
         # Alliance Pair scores
         ws = workbook.create_sheet("Alliance Pair Scores")
         ws.append([""] + sorted(self.alliance_pair_scores))
         for name in sorted(self.alliance_pair_scores):
-            ws.append([name] +
-            [v for _, v in sorted(self.alliance_pair_scores[name].items())])
+            ws.append(
+                [name]
+                + [
+                    v
+                    for _, v in sorted(self.alliance_pair_scores[name].items())
+                ]
+            )
         ws.conditional_formatting.add(
             f"B2:{get_column_letter(ws.max_column)}{ws.max_row}",
             lower_is_better_rule,
         )
-        for row in ws.iter_rows(min_row=2, min_col=2):
-            for cell in row:
+        for col in ws.iter_cols(min_row=2, min_col=2):
+            for cell in col:
                 cell.number_format = "0.00"
         ws.freeze_panes = "B2"
 
@@ -591,10 +709,49 @@ def build_stats():
             if len(hero_finishes[hero][3]) > 1
             else None,
             avg_finish_total=mean(
-                hero_finishes[hero][1] + hero_finishes[hero][2] + hero_finishes[hero][3]
+                hero_finishes[hero][1]
+                + hero_finishes[hero][2]
+                + hero_finishes[hero][3]
             ),
             finish_std_dev_total=stdev(
-                hero_finishes[hero][1] + hero_finishes[hero][2] + hero_finishes[hero][3]
+                hero_finishes[hero][1]
+                + hero_finishes[hero][2]
+                + hero_finishes[hero][3]
+            ),
+            rank_slope=float(
+                np.polyfit(
+                    *zip(
+                        *[
+                            (rank, hero_finish_f_by_rank[rank][hero])
+                            for rank in range(1, 9)
+                            if hero_finish_f_by_rank[rank].get(hero, None)
+                        ]
+                    ),
+                    1,
+                )[0]
+            ),
+            tier_normalized_rank_slope=float(
+                np.polyfit(
+                    *zip(
+                        *[
+                            (
+                                rank,
+                                sum(
+                                    finish_rates_by_tier[hero_tiers[hero]][
+                                        star
+                                    ]
+                                    for star in hero_star_finishes_by_rank[
+                                        rank
+                                    ][hero]
+                                )
+                                / finishes_by_rank[rank],
+                            )
+                            for rank in range(1, 9)
+                            if hero_star_finishes_by_rank[rank].get(hero, None)
+                        ]
+                    ),
+                    1,
+                )[0]
             ),
         )
         for hero in hero_finishes
@@ -607,6 +764,24 @@ def build_stats():
             finish_std_dev=stdev(underlord_finishes[underlord])
             if len(underlord_finishes[underlord]) > 1
             else None,
+            rank_slope=float(
+                np.polyfit(
+                    *zip(
+                        *[
+                            (
+                                rank,
+                                underlord_finishes_by_rank[rank][underlord]
+                                / finishes_by_rank[rank],
+                            )
+                            for rank in range(1, 9)
+                            if underlord_finishes_by_rank[rank].get(
+                                underlord, None
+                            )
+                        ]
+                    ),
+                    1,
+                )[0]
+            ),
         )
         for underlord in underlord_finishes
     ]
@@ -618,6 +793,24 @@ def build_stats():
             finish_std_dev=stdev(alliance_finishes[alliance])
             if len(alliance_finishes[alliance]) > 1
             else None,
+            rank_slope=float(
+                np.polyfit(
+                    *zip(
+                        *[
+                            (
+                                rank,
+                                alliance_finishes_by_rank[rank][alliance]
+                                / finishes_by_rank[rank],
+                            )
+                            for rank in range(1, 9)
+                            if alliance_finishes_by_rank[rank].get(
+                                alliance, None
+                            )
+                        ]
+                    ),
+                    1,
+                )[0]
+            ),
         )
         for alliance in alliance_finishes
     ]
@@ -630,6 +823,26 @@ def build_stats():
             finish_std_dev=stdev(active_alliance_finishes[alliance])
             if len(active_alliance_finishes[alliance]) > 1
             else None,
+            rank_slope=float(
+                np.polyfit(
+                    *zip(
+                        *[
+                            (
+                                rank,
+                                active_alliance_finishes_by_rank[rank][
+                                    alliance
+                                ]
+                                / finishes_by_rank[rank],
+                            )
+                            for rank in range(1, 9)
+                            if active_alliance_finishes_by_rank[rank].get(
+                                alliance, None
+                            )
+                        ]
+                    ),
+                    1,
+                )[0]
+            ),
         )
         for alliance in active_alliance_finishes
     ]
@@ -641,6 +854,22 @@ def build_stats():
             finish_std_dev=stdev(item_finishes[item])
             if len(item_finishes[item]) > 1
             else None,
+            rank_slope=float(
+                np.polyfit(
+                    *zip(
+                        *[
+                            (
+                                rank,
+                                item_finishes_by_rank[rank][item]
+                                / finishes_by_rank[rank],
+                            )
+                            for rank in range(1, 9)
+                            if item_finishes_by_rank[rank].get(item, None)
+                        ]
+                    ),
+                    1,
+                )[0]
+            ),
         )
         for item in item_finishes
     ]

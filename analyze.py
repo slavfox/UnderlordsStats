@@ -487,7 +487,9 @@ def process_scoreboard(scoreboard: Image.Image):
                 )
             )
             try:
-                star_value = int(get_match(star_value, stars, unknown_stars_dir))
+                star_value = int(
+                    get_match(star_value, stars, unknown_stars_dir)
+                )
             except TypeError:
                 print(f"Error processing {currently_processing}")
                 print(
